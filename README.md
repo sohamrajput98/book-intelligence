@@ -237,14 +237,31 @@ Clear chat history.
 
 ---
 
-## UI Screenshots
+## Screenshots
+<div align="center">
 
-Use these placeholders now, then replace with actual captured images before final submission.
+</div>
 
-- Dashboard UI: `https://your-cdn-or-github-user-images/dashboard.png`
-- Book Detail UI: `https://your-cdn-or-github-user-images/book-detail.png`
-- Q&A Chat UI: `https://your-cdn-or-github-user-images/qa-chat.png`
-- Recommendations + Insights UI: `https://your-cdn-or-github-user-images/recommendations-insights.png`
+---
+
+### 🏠 Main Page
+<p align="center">
+  <img src="assets/s1.png" width="800"/>
+</p>
+
+---
+
+### 📖 Book Detail Page
+<p align="center">
+  <img src="assets/s2.jpeg" width="800"/>
+</p>
+
+---
+
+### 💬 Q&A Chat Interface
+<p align="center">
+  <img src="assets/s3.jpeg" width="800"/>
+</p>
 
 ---
 
