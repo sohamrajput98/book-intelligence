@@ -15,7 +15,7 @@ export function BookCard({ book }: { book: Book }) {
           </div>
           <div>
             <p className="line-clamp-2 text-sm font-medium">{book.title}</p>
-            <p className="text-xs text-muted">{book.author || "Unknown"}</p>
+            <p className="text-xs text-muted">{book.author || "Author unavailable"}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge variant="outline">{book.genre || "N/A"}</Badge>
@@ -26,3 +26,4 @@ export function BookCard({ book }: { book: Book }) {
     </Link>
   );
 }
+

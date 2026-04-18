@@ -42,10 +42,11 @@ export const api = {
   getBooks: (page: number): Promise<PaginatedBooks> => unwrap(apiClient.get(`/books/?page=${page}`)),
   getBook: (id: number): Promise<Book> => unwrap(apiClient.get(`/books/${id}/`)),
   getRecommendations: (id: number): Promise<RecommendationBook[]> => unwrap(apiClient.get(`/books/${id}/recommendations/`)),
-  scrapeBooks: (pages: number): Promise<{ stats: { books_created: number } }> => unwrap(apiClient.post("/books/scrape/", { pages }, { timeout: LONG_TIMEOUT_MS })),
+  scrapeBooks: (pages: number): Promise<{ message: string; stats: { pages_requested: number; pages_processed: number; books_found: number; books_created: number; books_skipped_cached: number; books_failed: number; failed_pages: number }; errors: Array<Record<string, string>> }> => unwrap(apiClient.post("/books/scrape/", { pages }, { timeout: LONG_TIMEOUT_MS })),
   generateInsights: (id: number): Promise<{ status: string }> => unwrap(apiClient.post(`/books/${id}/generate-insights/`, {}, { timeout: LONG_TIMEOUT_MS })),
   indexBook: (id: number): Promise<{ chunks_indexed: number }> => unwrap(apiClient.post(`/books/${id}/index/`, {}, { timeout: LONG_TIMEOUT_MS })),
   askQuestion: (question: string): Promise<QAResponse> => unwrap(apiClient.post("/qa/ask/", { question }, { timeout: LONG_TIMEOUT_MS })),
   getHistory: (): Promise<ChatHistoryItem[]> => unwrap(apiClient.get("/qa/history/")),
   clearHistory: (): Promise<{ deleted_count: number }> => unwrap(apiClient.delete("/qa/history/"))
 };
+

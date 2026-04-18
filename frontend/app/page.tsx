@@ -26,7 +26,18 @@ export default function DashboardPage() {
   const scrapeMutation = useMutation({
     mutationFn: () => api.scrapeBooks(5),
     onSuccess: (data) => {
-      toast.success(`Scraping completed. Added ${data.stats.books_created} books.`);
+      const created = data.stats.books_created;
+      const skipped = data.stats.books_skipped_cached;
+      const failed = data.stats.books_failed;
+
+      if (created > 0) {
+        toast.success(`Scraping completed: added ${created} new books.`);
+      } else if (skipped > 0 && failed === 0) {
+        toast.info(`Scraping completed: no new books. ${skipped} already existed (cached).`);
+      } else {
+        toast.warning(`Scraping completed with partial issues. Failed: ${failed}.`);
+      }
+
       booksQuery.refetch();
     },
     onError: (err: Error) => toast.error(err.message)
@@ -89,4 +100,5 @@ export default function DashboardPage() {
     </div>
   );
 }
+
 

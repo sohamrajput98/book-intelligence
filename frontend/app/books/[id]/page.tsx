@@ -54,7 +54,7 @@ export default function BookDetailPage() {
           </div>
           <div className="space-y-4">
             <h1 className="text-3xl font-semibold">{book.title}</h1>
-            <p className="text-muted">by {book.author || "Unknown"}</p>
+            <p className="text-muted">by {book.author || "Author unavailable"}</p>
             <div className="flex flex-wrap gap-2">
               <Badge>{book.genre || "Unclassified"}</Badge>
               <Badge variant="outline">Rating: {book.rating ?? "N/A"}</Badge>
@@ -109,3 +109,4 @@ export default function BookDetailPage() {
     </div>
   );
 }
+

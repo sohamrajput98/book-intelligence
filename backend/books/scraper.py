@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 BASE_SITE_URL = "https://books.toscrape.com/"
 CATALOG_PAGE_URL = "https://books.toscrape.com/catalogue/page-{page}.html"
+OPENLIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
 
 RATING_MAP = {
     "One": Decimal("1.00"),
@@ -29,6 +30,8 @@ RATING_MAP = {
     "Four": Decimal("4.00"),
     "Five": Decimal("5.00"),
 }
+
+_MOJIBAKE_MARKERS = ("â€", "â€™", "â€œ", "â€", "Ã", "�")
 
 
 @dataclass(slots=True)
@@ -39,6 +42,7 @@ class ScrapeStats:
     pages_processed: int = 0
     books_found: int = 0
     books_created: int = 0
+    books_updated: int = 0
     books_skipped_cached: int = 0
     books_failed: int = 0
     failed_pages: int = 0
@@ -50,6 +54,7 @@ class ScrapeStats:
             "pages_processed": self.pages_processed,
             "books_found": self.books_found,
             "books_created": self.books_created,
+            "books_updated": self.books_updated,
             "books_skipped_cached": self.books_skipped_cached,
             "books_failed": self.books_failed,
             "failed_pages": self.failed_pages,
@@ -79,6 +84,8 @@ def _fetch_page(session: Session, url: str, timeout: int = 20) -> Response:
     """Fetch a web page and raise if the response is not successful."""
     response = session.get(url, timeout=timeout)
     response.raise_for_status()
+    # books.toscrape is utf-8; enforce to avoid mojibake artifacts.
+    response.encoding = "utf-8"
     return response
 
 
@@ -93,8 +100,76 @@ def _extract_rating_from_tag(article_tag: Any) -> Decimal | None:
     return None
 
 
-def _parse_detail_page(html: str) -> tuple[str, int]:
-    """Parse detail page HTML and return description plus review count if present."""
+def _safe_int(raw_value: str) -> int:
+    """Parse first positive integer in a string and default to zero."""
+    match = re.search(r"\d+", raw_value or "")
+    return int(match.group(0)) if match else 0
+
+
+def _contains_mojibake(text: str) -> bool:
+    """Detect common mojibake markers in text payloads."""
+    return any(marker in (text or "") for marker in _MOJIBAKE_MARKERS)
+
+
+def _repair_mojibake(text: str) -> str:
+    """Attempt lightweight mojibake repair for latin1-decoded utf-8 text."""
+    value = (text or "").strip()
+    if not value:
+        return ""
+    if not _contains_mojibake(value):
+        return value
+
+    try:
+        repaired = value.encode("latin1", errors="ignore").decode("utf-8", errors="ignore").strip()
+        if repaired:
+            value = repaired
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        logger.debug("Mojibake repair fallback used")
+
+    return value
+
+
+def _clean_text(text: str) -> str:
+    """Normalize whitespace and attempt character encoding repair."""
+    cleaned = _repair_mojibake(text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _lookup_author_by_title(session: Session, title: str, cache: dict[str, str | None]) -> str | None:
+    """Try resolving author via Open Library using the book title."""
+    normalized = title.strip().lower()
+    if not normalized:
+        return None
+
+    if normalized in cache:
+        return cache[normalized]
+
+    try:
+        response = session.get(
+            OPENLIBRARY_SEARCH_URL,
+            params={"title": title, "limit": 1, "fields": "author_name"},
+            timeout=12,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        docs = payload.get("docs", []) if isinstance(payload, dict) else []
+        if docs and isinstance(docs[0], dict):
+            author_names = docs[0].get("author_name", [])
+            if isinstance(author_names, list) and author_names:
+                author = _clean_text(str(author_names[0]))
+                if author:
+                    cache[normalized] = author
+                    return author
+    except Exception as exc:
+        logger.debug("OpenLibrary author lookup failed for title='%s': %s", title, exc)
+
+    cache[normalized] = None
+    return None
+
+
+def _parse_detail_page(html: str) -> tuple[str, int, str]:
+    """Parse detail page HTML and return description, review count, and author if present."""
     soup = BeautifulSoup(html, "html.parser")
 
     description = ""
@@ -102,29 +177,37 @@ def _parse_detail_page(html: str) -> tuple[str, int]:
     if description_anchor:
         description_paragraph = description_anchor.find_next("p")
         if description_paragraph:
-            description = description_paragraph.get_text(strip=True)
+            description = _clean_text(description_paragraph.get_text(" ", strip=True))
 
     reviews_count = 0
+    author = ""
     for row in soup.select("table.table.table-striped tr"):
         heading = row.select_one("th")
         value = row.select_one("td")
         if not heading or not value:
             continue
-        if heading.get_text(strip=True).lower() == "number of reviews":
-            reviews_count = _safe_int(value.get_text(strip=True))
-            break
 
-    return description, reviews_count
+        key = heading.get_text(strip=True).lower()
+        raw_value = value.get_text(" ", strip=True)
+
+        if key == "number of reviews":
+            reviews_count = _safe_int(raw_value)
+        elif key == "author":
+            author = _clean_text(raw_value)
+
+    return description, reviews_count, author
 
 
-def _safe_int(raw_value: str) -> int:
-    """Parse first positive integer in a string and default to zero."""
-    match = re.search(r"\d+", raw_value or "")
-    return int(match.group(0)) if match else 0
+def _needs_cached_refresh(book: Book) -> bool:
+    """Determine whether a cached book should be refreshed."""
+    author = (book.author or "").strip().lower()
+    author_missing = author in {"", "unknown", "author unavailable"}
+    bad_description = _contains_mojibake(book.description or "")
+    return author_missing or bad_description
 
 
 def scrape_books(pages: int = 5) -> dict[str, Any]:
-    """Scrape books from books.toscrape.com with cache-aware inserts.
+    """Scrape books from books.toscrape.com with cache-aware inserts and safe refreshes.
 
     Args:
         pages: Number of catalogue pages to scan.
@@ -135,7 +218,9 @@ def scrape_books(pages: int = 5) -> dict[str, Any]:
     pages_to_scrape = max(1, min(pages, 100))
     stats = ScrapeStats(pages_requested=pages_to_scrape)
     errors: list[dict[str, str]] = []
-    existing_urls = set(Book.objects.values_list("book_url", flat=True))
+
+    existing_books = {book.book_url: book for book in Book.objects.all()}
+    author_cache: dict[str, str | None] = {}
 
     session = _build_session()
 
@@ -165,34 +250,70 @@ def scrape_books(pages: int = 5) -> dict[str, Any]:
                     continue
 
                 detail_url = urljoin(page_url, link.get("href", ""))
-                if detail_url in existing_urls:
-                    stats.books_skipped_cached += 1
-                    continue
-
-                title = link.get("title", "").strip() or link.get_text(strip=True)
+                title = _clean_text(link.get("title", "").strip() or link.get_text(" ", strip=True))
                 rating = _extract_rating_from_tag(book_card)
                 cover_image_url = ""
                 if image and image.get("src"):
                     cover_image_url = urljoin(page_url, image.get("src"))
 
+                existing_book = existing_books.get(detail_url)
+                if existing_book and not _needs_cached_refresh(existing_book):
+                    stats.books_skipped_cached += 1
+                    continue
+
                 try:
                     detail_response = _fetch_page(session=session, url=detail_url)
-                    description, reviews_count = _parse_detail_page(detail_response.text)
+                    description, reviews_count, author_from_detail = _parse_detail_page(detail_response.text)
+                    resolved_author = author_from_detail or _lookup_author_by_title(session, title, author_cache) or "Author unavailable"
 
-                    Book.objects.create(
+                    if existing_book:
+                        fields_to_update: list[str] = []
+
+                        if title and existing_book.title != title:
+                            existing_book.title = title
+                            fields_to_update.append("title")
+                        if existing_book.author != resolved_author:
+                            existing_book.author = resolved_author
+                            fields_to_update.append("author")
+                        if existing_book.rating != rating:
+                            existing_book.rating = rating
+                            fields_to_update.append("rating")
+                        if existing_book.reviews_count != reviews_count:
+                            existing_book.reviews_count = reviews_count
+                            fields_to_update.append("reviews_count")
+                        if description and existing_book.description != description:
+                            existing_book.description = description
+                            fields_to_update.append("description")
+                        if cover_image_url and existing_book.cover_image_url != cover_image_url:
+                            existing_book.cover_image_url = cover_image_url
+                            fields_to_update.append("cover_image_url")
+
+                        if fields_to_update:
+                            existing_book.save(update_fields=fields_to_update)
+                            stats.books_updated += 1
+                        else:
+                            stats.books_skipped_cached += 1
+                        continue
+
+                    book = Book.objects.create(
                         title=title,
-                        author="Unknown",
+                        author=resolved_author,
                         rating=rating,
                         reviews_count=reviews_count,
                         description=description,
                         book_url=detail_url,
                         cover_image_url=cover_image_url,
                     )
-                    existing_urls.add(detail_url)
+                    existing_books[detail_url] = book
                     stats.books_created += 1
                 except (RequestException, IntegrityError) as exc:
                     stats.books_failed += 1
                     logger.exception("Failed to scrape or store book detail %s", detail_url)
+                    errors.append({"book": detail_url, "error": str(exc)})
+                    continue
+                except Exception as exc:
+                    stats.books_failed += 1
+                    logger.exception("Unexpected scrape processing error for %s", detail_url)
                     errors.append({"book": detail_url, "error": str(exc)})
                     continue
     finally:
